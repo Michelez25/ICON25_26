@@ -1,27 +1,15 @@
 import pandas as pd
 import matplotlib.pyplot as plt
-import warnings
-
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 from scipy.stats import randint
-try:
-    from preprocessing_CHD import df
-except ImportError:
-    print("ERRORE: Assicurati di aver salvato 'preprocessing_CHD.py' e 'dataset.csv' nella stessa directory.")
-    exit()
+from preprocessing_CHD import df
 
-warnings.simplefilter("ignore", category=FutureWarning)
-
+# Preparazione dati
 X = df.drop("chd", axis=1)
 y = df["chd"]
 
-n_runs = 10
-means_cv = []      
-stds_cv = []       
-best_params_all_runs = []
-
-# parametri da esplorare per Random Forest
+# Definizione iperparametri da testare
 param_dist = {
     'n_estimators': randint(50, 200),
     'max_depth': [None, 5, 10, 15],
@@ -29,59 +17,43 @@ param_dist = {
     'min_samples_leaf': [1, 2, 4]
 }
 
-print("\n----- Ricerca Ricerca dei migliori iperparametri per Random Forest (su dati CHD) -----")
+# Struttura Nested CV: 10 fold esterni (le "Run") e 5 fold interni (il Tuning)
+outer_cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
-for run in range(n_runs):
-    print(f"\nRun {run+1}/{n_runs}")
-    X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, stratify=y, random_state=run)
+means_cv = []
+stds_cv = []
 
-    rf = RandomForestClassifier(random_state=run)
+print("\n--- Esecuzione Nested CV: Random Forest (Generazione Risultati) ---")
+
+for i, (train_idx, test_idx) in enumerate(outer_cv.split(X, y)):
+    X_train_outer, y_train_outer = X.iloc[train_idx], y.iloc[train_idx]
+    
+    rf = RandomForestClassifier(random_state=42)
+    # Loop Interno: Ricerca dei parametri migliori sul training set dell'outer fold
     random_search = RandomizedSearchCV(
-        rf,
-        param_distributions=param_dist,
-        n_iter=15,
-        cv=5,
-        scoring='accuracy',
-        n_jobs=-1,
-        random_state=run
+        rf, param_distributions=param_dist, n_iter=15, cv=inner_cv, 
+        scoring='accuracy', n_jobs=-1, random_state=42
     )
-    random_search.fit(X_train, y_train)
+    random_search.fit(X_train_outer, y_train_outer)
+    
+    # Salvataggio metriche per la tabella
+    means_cv.append(random_search.best_score_)
+    stds_cv.append(random_search.cv_results_['std_test_score'][random_search.best_index_])
+    print(f"Completata Run {i+1}/10")
 
-    mean_cv = random_search.cv_results_['mean_test_score'][random_search.best_index_]
-    std_cv = random_search.cv_results_['std_test_score'][random_search.best_index_]
-
-    means_cv.append(mean_cv)
-    stds_cv.append(std_cv)
-    best_params_all_runs.append(random_search.best_params_)
-
-    print(f"  Cross-Validation mean accuracy: {mean_cv:.4f}")
-    print(f"  Cross-Validation std accuracy: {std_cv:.4f}")
-    print(f"  Migliori iperparametri: {random_search.best_params_}")
-
-# tabella riassuntiva delle run
-summary_df = pd.DataFrame({
-    'Run': list(range(1, n_runs+1)),
-    'CV Accuracy': means_cv,
-    'CV Std': stds_cv
-})
-print("\nTabella riassuntiva delle run (Random Forest su CHD):")
+# Tabella riassuntiva
+summary_df = pd.DataFrame({'Run': range(1, 11), 'CV Accuracy': means_cv, 'CV Std': stds_cv})
+print("\nTabella riassuntiva delle run (Random Forest):")
 print(summary_df.to_string(index=False, float_format="%.4f"))
 
-# grafico accuracy media e std su 10 run
-plt.figure(figsize=(10, 6), num = "Random Forest - CV Accuracy su 10 Run (CHD)")
+# Grafico
+plt.figure(figsize=(10, 6))
+plt.errorbar(summary_df['Run'], summary_df['CV Accuracy'], yerr=summary_df['CV Std'], fmt='o', capsize=5, elinewidth=2)
 plt.title("ACCURACY MEDIA E DEVIAZIONE STANDARD (SU 10 RUN) - RANDOM FOREST CHD", fontsize=14)
 plt.xlabel("Numero di Run")
 plt.ylabel("Accuracy")
-plt.xticks(summary_df['Run'])
-plt.errorbar(
-    summary_df['Run'],
-    summary_df['CV Accuracy'],
-    yerr=summary_df['CV Std'],
-    fmt='o', 
-    capsize=5,
-    elinewidth=2,
-    markeredgewidth=2
-)
 plt.grid(True)
+plt.xticks(range(1, 11))
 plt.tight_layout()
 plt.show()
